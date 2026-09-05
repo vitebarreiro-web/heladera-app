@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Plus, Bell, BellOff, X, Check, ShoppingCart, Package, Home, Trash2, AlertTriangle, SlidersHorizontal, ScanLine, Barcode } from "lucide-react";
 import { doc, onSnapshot, setDoc } from "firebase/firestore";
 import { db, FAMILY_CODE } from "./firebase";
+import { BrowserMultiFormatReader } from "@zxing/browser";
+import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
 // ---------- helpers ----------
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -57,25 +59,6 @@ const UNITS = ["un.", "kg", "g", "l", "ml", "paq."];
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 // ---------- scanner helpers ----------
-// Carga QuaggaJS (lector de códigos de barras) desde CDN la primera vez que hace falta.
-function loadQuagga() {
-  return new Promise((resolve, reject) => {
-    if (window.Quagga) return resolve(window.Quagga);
-    const existing = document.getElementById("quagga-script");
-    if (existing) {
-      existing.addEventListener("load", () => resolve(window.Quagga));
-      existing.addEventListener("error", reject);
-      return;
-    }
-    const script = document.createElement("script");
-    script.id = "quagga-script";
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js";
-    script.onload = () => resolve(window.Quagga);
-    script.onerror = reject;
-    document.body.appendChild(script);
-  });
-}
-
 // Beep sintetizado (sin archivo de audio externo) al detectar un código.
 function playBeep() {
   try {
@@ -1057,59 +1040,48 @@ function BuyPromptModal({ group, onClose, onConfirm }) {
   );
 }
 
-// ---------- Scanner ----------
+// ---------- Scanner (ZXing) ----------
+// Limitamos los formatos a los que usan los productos de supermercado
+// (más rápido y más preciso que buscar cualquier tipo de código).
+const scannerHints = new Map([
+  [
+    DecodeHintType.POSSIBLE_FORMATS,
+    [BarcodeFormat.EAN_13, BarcodeFormat.EAN_8, BarcodeFormat.UPC_A, BarcodeFormat.UPC_E],
+  ],
+]);
+
 function ScannerModal({ onClose, onDetected }) {
-  const scannerRef = useRef(null);
+  const videoRef = useRef(null);
+  const controlsRef = useRef(null);
   const [status, setStatus] = useState("loading"); // loading | scanning | error
   const [manualCode, setManualCode] = useState("");
   const detectedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    const reader = new BrowserMultiFormatReader(scannerHints);
 
-    function handleDetected(result) {
-      const code = result?.codeResult?.code;
-      if (!code || detectedRef.current) return;
-      detectedRef.current = true;
-      playBeep();
-      try { window.Quagga.stop(); } catch {}
-      onDetected(code);
-    }
-
-    (async () => {
-      try {
-        await loadQuagga();
-        if (cancelled || !scannerRef.current) return;
-        window.Quagga.init(
-          {
-            inputStream: {
-              type: "LiveStream",
-              target: scannerRef.current,
-              constraints: { facingMode: "environment" },
-            },
-            decoder: { readers: ["ean_reader", "ean_8_reader", "upc_reader"] },
-            locate: true,
-          },
-          (err) => {
-            if (cancelled) return;
-            if (err) {
-              setStatus("error");
-              return;
-            }
-            window.Quagga.start();
-            setStatus("scanning");
-          }
-        );
-        window.Quagga.onDetected(handleDetected);
-      } catch {
+    reader
+      .decodeFromVideoDevice(undefined, videoRef.current, (result, err, controls) => {
+        if (cancelled) return;
+        controlsRef.current = controls;
+        setStatus((s) => (s === "loading" ? "scanning" : s));
+        if (result && !detectedRef.current) {
+          detectedRef.current = true;
+          playBeep();
+          controls.stop();
+          onDetected(result.getText());
+        }
+        // los errores de "no encontré nada en este frame" son normales y constantes,
+        // no hay que tratarlos como falla real del escáner.
+      })
+      .catch(() => {
         if (!cancelled) setStatus("error");
-      }
-    })();
+      });
 
     return () => {
       cancelled = true;
-      try { window.Quagga.offDetected(handleDetected); } catch {}
-      try { window.Quagga.stop(); } catch {}
+      try { controlsRef.current?.stop(); } catch {}
     };
   }, []);
 
@@ -1132,15 +1104,17 @@ function ScannerModal({ onClose, onDetected }) {
 
       {status !== "error" && (
         <div className="flex-1 relative overflow-hidden">
-          <div ref={scannerRef} className="absolute inset-0 [&>video]:w-full [&>video]:h-full [&>video]:object-cover [&>canvas]:hidden" />
+          <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" muted playsInline />
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-64 h-28 border-2 border-white/70 rounded-2xl" />
+            <div className="w-72 h-32 border-2 border-white/70 rounded-2xl" />
           </div>
           {status === "loading" && (
             <p className="absolute bottom-6 left-0 right-0 text-center text-white text-sm">Iniciando cámara…</p>
           )}
           {status === "scanning" && (
-            <p className="absolute bottom-6 left-0 right-0 text-center text-white text-sm">Apuntá al código de barras</p>
+            <p className="absolute bottom-6 left-0 right-0 text-center text-white text-sm">
+              Acercá el código hasta que ocupe el recuadro
+            </p>
           )}
         </div>
       )}
@@ -1149,7 +1123,8 @@ function ScannerModal({ onClose, onDetected }) {
         <div className="flex-1 flex flex-col items-center justify-center px-6 gap-4 text-center">
           <Barcode size={40} color="#fff" />
           <p className="text-white text-sm">
-            No se pudo usar la cámara acá adentro (limitación de este entorno de prueba — en la app instalada va a andar). Mientras tanto, escribí el código de barras a mano:
+            No se pudo acceder a la cámara (puede que falte darle permiso al navegador, o que otra app la esté
+            usando). Mientras tanto, escribí el código de barras a mano:
           </p>
           <input
             value={manualCode}
