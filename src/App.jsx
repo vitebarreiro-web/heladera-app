@@ -1061,8 +1061,19 @@ function ScannerModal({ onClose, onDetected }) {
     let cancelled = false;
     const reader = new BrowserMultiFormatReader(scannerHints);
 
+    // Forzamos cámara trasera + enfoque continuo: sin esto, el navegador a veces
+    // elige la cámara delantera, o enfoca fijo y no logra distinguir códigos de cerca.
+    const constraints = {
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        advanced: [{ focusMode: "continuous" }],
+      },
+    };
+
     reader
-      .decodeFromVideoDevice(undefined, videoRef.current, (result, err, controls) => {
+      .decodeFromConstraints(constraints, videoRef.current, (result, err, controls) => {
         if (cancelled) return;
         controlsRef.current = controls;
         setStatus((s) => (s === "loading" ? "scanning" : s));
@@ -1113,7 +1124,7 @@ function ScannerModal({ onClose, onDetected }) {
           )}
           {status === "scanning" && (
             <p className="absolute bottom-6 left-0 right-0 text-center text-white text-sm">
-              Acercá el código hasta que ocupe el recuadro
+              Mové el celu despacio hasta enfocar — buena luz y sin muy cerca
             </p>
           )}
         </div>
