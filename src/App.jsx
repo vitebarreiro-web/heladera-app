@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Plus, Bell, BellOff, X, Check, ShoppingCart, Package, Home, Trash2, AlertTriangle, SlidersHorizontal, ScanLine, Barcode } from "lucide-react";
+import { Plus, Bell, BellOff, X, Check, ShoppingCart, Package, Home, Trash2, AlertTriangle, SlidersHorizontal, ScanLine, Barcode, ChefHat } from "lucide-react";
 import { doc, onSnapshot, setDoc } from "firebase/firestore";
 import { db, FAMILY_CODE } from "./firebase";
 import { BrowserMultiFormatReader } from "@zxing/browser";
@@ -125,6 +125,10 @@ export default function App() {
   const [buyPrompt, setBuyPrompt] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
   const [scanPrefill, setScanPrefill] = useState(null);
+  const [recipes, setRecipes] = useState([]);
+  const [showCocina, setShowCocina] = useState(false);
+  const [showRecipeModal, setShowRecipeModal] = useState(false);
+  const [editingRecipe, setEditingRecipe] = useState(null);
 
   // Suscripción en tiempo real: cualquier cambio que haga otro celular con el mismo
   // FAMILY_CODE llega solo, sin recargar la página.
@@ -137,6 +141,7 @@ export default function App() {
         skipNextWrite.current = true; // lo que llega de Firestore no hay que reescribirlo
         setItems(data?.items ?? []);
         setManualShopping(data?.manual ?? []);
+        setRecipes(data?.recipes ?? []);
         setLoaded(true);
       },
       () => setLoaded(true) // si falla la conexión, igual dejamos usar la app (local)
@@ -150,8 +155,8 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     if (skipNextWrite.current) { skipNextWrite.current = false; return; }
-    setDoc(familyDocRef, { items, manual: manualShopping }, { merge: true }).catch(() => {});
-  }, [items, manualShopping, loaded]);
+    setDoc(familyDocRef, { items, manual: manualShopping, recipes }, { merge: true }).catch(() => {});
+  }, [items, manualShopping, recipes, loaded]);
 
   const [toastVisible, setToastVisible] = useState(false);
   const showToast = useCallback((msg) => {
@@ -311,6 +316,19 @@ export default function App() {
     setManualShopping((prev) => prev.filter((m) => !m.checked));
   }
 
+  function saveRecipe(data) {
+    if (editingRecipe) {
+      setRecipes((prev) => prev.map((r) => (r.id === editingRecipe.id ? { ...r, ...data } : r)));
+    } else {
+      setRecipes((prev) => [...prev, { id: uid(), ...data }]);
+    }
+    setShowRecipeModal(false);
+    setEditingRecipe(null);
+  }
+  function removeRecipe(id) {
+    setRecipes((prev) => prev.filter((r) => r.id !== id));
+  }
+
   async function handleBarcodeDetected(code) {
     setShowScanner(false);
     // si ese código ya existe en algún producto, vamos directo a editarlo (sumarle stock)
@@ -368,6 +386,7 @@ export default function App() {
             onRemove={removeItem}
             onAdd={() => { setEditingItem(null); setScanPrefill(null); setShowAddItem(true); }}
             onScan={() => setShowScanner(true)}
+            onCocina={() => setShowCocina(true)}
             displayName={displayName}
             lowStockKeys={lowStockKeys}
           />
@@ -441,6 +460,25 @@ export default function App() {
         <ScannerModal
           onClose={() => setShowScanner(false)}
           onDetected={handleBarcodeDetected}
+        />
+      )}
+
+      {showCocina && (
+        <CocinaView
+          recipes={recipes}
+          items={items}
+          onClose={() => setShowCocina(false)}
+          onAdd={() => { setEditingRecipe(null); setShowRecipeModal(true); }}
+          onEdit={(r) => { setEditingRecipe(r); setShowRecipeModal(true); }}
+          onRemove={removeRecipe}
+        />
+      )}
+
+      {showRecipeModal && (
+        <RecipeModal
+          recipe={editingRecipe}
+          onClose={() => { setShowRecipeModal(false); setEditingRecipe(null); }}
+          onSave={saveRecipe}
         />
       )}
 
@@ -784,7 +822,7 @@ function ShoppingRow({ label, sublabel, auto, onCheck }) {
 }
 
 // ---------- Inventory ----------
-function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, displayName, lowStockKeys }) {
+function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, onCocina, displayName, lowStockKeys }) {
   const visibleItems = items.filter((i) => i.stock > 0);
   const hiddenCount = items.length - visibleItems.length;
 
@@ -818,6 +856,13 @@ function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, displ
           </button>
         </div>
       </div>
+
+      <button
+        onClick={onCocina}
+        className="w-full flex items-center justify-center gap-2 text-sm font-semibold bg-[#EFE6D8] text-[#5B4A2F] px-3 py-2.5 rounded-2xl border border-[#E1D5BE]"
+      >
+        <ChefHat size={16} /> Ver qué puedo cocinar
+      </button>
 
       {visibleItems.length === 0 && (
         <EmptyNote
@@ -891,6 +936,288 @@ function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, displ
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ---------- Cocina ----------
+const normalizeIngredientName = (s) => s.trim().toLowerCase();
+
+// ¿Tengo este ingrediente en stock? Comparamos solo por nombre (no cantidad exacta),
+// para no meternos en líos de unidades distintas entre la receta y la heladera.
+function haveIngredient(items, ingredientName) {
+  const key = normalizeIngredientName(ingredientName);
+  return items.some((i) => normalizeIngredientName(i.name) === key && i.stock > 0);
+}
+
+function CocinaView({ recipes, items, onClose, onAdd, onEdit, onRemove }) {
+  const [activeTags, setActiveTags] = useState([]);
+  const [expandedId, setExpandedId] = useState(null);
+
+  const allTags = useMemo(() => {
+    const set = new Set();
+    recipes.forEach((r) => (r.tags || []).forEach((t) => set.add(t)));
+    return [...set].sort();
+  }, [recipes]);
+
+  const recipesWithStatus = useMemo(() => {
+    return recipes.map((r) => {
+      const missing = (r.ingredients || []).filter((ing) => !haveIngredient(items, ing.name));
+      return { ...r, missing, canMake: missing.length === 0 };
+    });
+  }, [recipes, items]);
+
+  const filtered = recipesWithStatus.filter((r) =>
+    activeTags.every((t) => (r.tags || []).includes(t))
+  );
+
+  function toggleTag(tag) {
+    setActiveTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
+  }
+
+  return (
+    <div className="fixed inset-0 bg-[#F7F4EE] z-50 flex flex-col">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#EAE4D6]">
+        <h3 style={{ fontFamily: "'Fraunces', serif" }} className="text-lg font-semibold text-[#1C2B2D] flex items-center gap-1.5">
+          <ChefHat size={17} /> Cocina
+        </h3>
+        <button onClick={onClose} className="w-8 h-8 rounded-full bg-[#EFEAE0] flex items-center justify-center">
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        <button
+          onClick={onAdd}
+          className="w-full flex items-center justify-center gap-1 text-sm font-semibold bg-[#1C2B2D] text-[#F7F4EE] px-3 py-2.5 rounded-2xl"
+        >
+          <Plus size={15} /> Nueva receta
+        </button>
+
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {allTags.map((tag) => (
+              <button
+                key={tag}
+                onClick={() => toggleTag(tag)}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${
+                  activeTags.includes(tag)
+                    ? "bg-[#4C7A6C] text-white border-[#4C7A6C]"
+                    : "bg-white text-[#5B5347] border-[#EAE4D6]"
+                }`}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {filtered.length === 0 && (
+          <EmptyNote
+            text={
+              recipes.length === 0
+                ? "Todavía no cargaste ninguna receta."
+                : "Ninguna receta coincide con esos filtros."
+            }
+          />
+        )}
+
+        <div className="space-y-2">
+          {filtered.map((r) => {
+            const expanded = expandedId === r.id;
+            return (
+              <div key={r.id} className="bg-white border border-[#EAE4D6] rounded-2xl overflow-hidden">
+                <button
+                  onClick={() => setExpandedId(expanded ? null : r.id)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-left"
+                >
+                  <div className="min-w-0">
+                    <p className="font-semibold text-[#241E17] truncate">{r.name}</p>
+                    {r.tags?.length > 0 && (
+                      <p className="text-xs text-[#918A7C] truncate">{r.tags.join(" · ")}</p>
+                    )}
+                  </div>
+                  <span
+                    className={`shrink-0 text-[10px] font-bold uppercase tracking-wide px-2 py-1 rounded-full ${
+                      r.canMake ? "bg-[#E4EEE8] text-[#3A6152]" : "bg-[#F0EBDD] text-[#847B69]"
+                    }`}
+                  >
+                    {r.canMake ? "Podés hacerlo" : `Falta ${r.missing.length}`}
+                  </span>
+                </button>
+
+                {expanded && (
+                  <div className="px-4 pb-4 space-y-3 border-t border-[#EAE4D6] pt-3">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wide text-[#918A7C] mb-1">Ingredientes</p>
+                      <ul className="space-y-1">
+                        {(r.ingredients || []).map((ing, idx) => {
+                          const missing = !haveIngredient(items, ing.name);
+                          return (
+                            <li key={idx} className={`text-sm ${missing ? "text-[#C4432E]" : "text-[#241E17]"}`}>
+                              {missing ? "✕" : "✓"} {ing.amount ? `${ing.amount} ` : ""}{ing.unit ? `${ing.unit} ` : ""}{ing.name}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                    {r.steps?.length > 0 && (
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-wide text-[#918A7C] mb-1">Preparación</p>
+                        <ol className="space-y-1 list-decimal list-inside">
+                          {r.steps.map((step, idx) => (
+                            <li key={idx} className="text-sm text-[#241E17]">{step}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={() => onEdit(r)}
+                        className="flex-1 text-sm font-semibold bg-[#EFEAE0] text-[#1C2B2D] py-2 rounded-xl"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => onRemove(r.id)}
+                        className="w-11 flex items-center justify-center bg-[#F7EAE6] text-[#C4432E] rounded-xl"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecipeModal({ recipe, onClose, onSave }) {
+  const [name, setName] = useState(recipe?.name ?? "");
+  const [tagsText, setTagsText] = useState((recipe?.tags || []).join(", "));
+  const [ingredients, setIngredients] = useState(
+    recipe?.ingredients?.length ? recipe.ingredients : [{ name: "", amount: "", unit: "" }]
+  );
+  const [stepsText, setStepsText] = useState((recipe?.steps || []).join("\n"));
+
+  function updateIngredient(idx, field, value) {
+    setIngredients((prev) => prev.map((ing, i) => (i === idx ? { ...ing, [field]: value } : ing)));
+  }
+  function addIngredientRow() {
+    setIngredients((prev) => [...prev, { name: "", amount: "", unit: "" }]);
+  }
+  function removeIngredientRow(idx) {
+    setIngredients((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function handleSave() {
+    if (!name.trim()) return;
+    const cleanIngredients = ingredients
+      .map((ing) => ({ ...ing, name: ing.name.trim() }))
+      .filter((ing) => ing.name);
+    const tags = tagsText
+      .split(",")
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean);
+    const steps = stepsText.split("\n").map((s) => s.trim()).filter(Boolean);
+    onSave({ name: name.trim(), tags, ingredients: cleanIngredients, steps });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-[60]">
+      <div className="bg-[#F7F4EE] w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[92vh] overflow-y-auto p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 style={{ fontFamily: "'Fraunces', serif" }} className="text-lg font-semibold text-[#1C2B2D]">
+            {recipe ? "Editar receta" : "Nueva receta"}
+          </h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-[#EFEAE0] flex items-center justify-center">
+            <X size={16} />
+          </button>
+        </div>
+
+        <Field label="Nombre">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ej: Tortilla de papas"
+            className="w-full bg-white border border-[#EAE4D6] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#4C7A6C]"
+            autoFocus
+          />
+        </Field>
+
+        <Field label="Etiquetas (separadas por coma)">
+          <input
+            value={tagsText}
+            onChange={(e) => setTagsText(e.target.value)}
+            placeholder="Ej: sin gluten, vegetariano"
+            className="w-full bg-white border border-[#EAE4D6] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#4C7A6C]"
+          />
+        </Field>
+
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-[#918A7C] mb-2">Ingredientes</p>
+          <div className="space-y-2">
+            {ingredients.map((ing, idx) => (
+              <div key={idx} className="flex gap-2">
+                <input
+                  value={ing.amount}
+                  onChange={(e) => updateIngredient(idx, "amount", e.target.value)}
+                  placeholder="Cant."
+                  className="w-16 bg-white border border-[#EAE4D6] rounded-xl px-2 py-2 text-sm outline-none focus:border-[#4C7A6C]"
+                />
+                <input
+                  value={ing.unit}
+                  onChange={(e) => updateIngredient(idx, "unit", e.target.value)}
+                  placeholder="Unidad"
+                  className="w-20 bg-white border border-[#EAE4D6] rounded-xl px-2 py-2 text-sm outline-none focus:border-[#4C7A6C]"
+                />
+                <input
+                  value={ing.name}
+                  onChange={(e) => updateIngredient(idx, "name", e.target.value)}
+                  placeholder="Ingrediente (mismo nombre que en Heladera)"
+                  className="flex-1 min-w-0 bg-white border border-[#EAE4D6] rounded-xl px-3 py-2 text-sm outline-none focus:border-[#4C7A6C]"
+                />
+                <button
+                  onClick={() => removeIngredientRow(idx)}
+                  className="w-9 shrink-0 flex items-center justify-center bg-[#F7EAE6] text-[#C4432E] rounded-xl"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={addIngredientRow}
+            className="mt-2 text-sm font-semibold text-[#4C7A6C] flex items-center gap-1"
+          >
+            <Plus size={14} /> Agregar ingrediente
+          </button>
+          <p className="text-xs text-[#918A7C] mt-1">
+            Para que la app detecte si te falta o no, escribí el ingrediente con el mismo nombre que usás en Heladera.
+          </p>
+        </div>
+
+        <Field label="Preparación (un paso por línea)">
+          <textarea
+            value={stepsText}
+            onChange={(e) => setStepsText(e.target.value)}
+            placeholder={"Pelar y cortar las papas\nFreír a fuego medio\n..."}
+            rows={4}
+            className="w-full bg-white border border-[#EAE4D6] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#4C7A6C] resize-none"
+          />
+        </Field>
+
+        <button
+          onClick={handleSave}
+          className="w-full bg-[#1C2B2D] text-[#F7F4EE] font-bold rounded-2xl py-3"
+        >
+          Guardar receta
+        </button>
+      </div>
     </div>
   );
 }
