@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { Plus, Bell, BellOff, X, Check, ShoppingCart, Package, Home, Trash2, AlertTriangle, SlidersHorizontal, ScanLine, Barcode, ChefHat } from "lucide-react";
+import { Plus, Bell, BellOff, X, Check, ShoppingCart, Package, Home, Trash2, AlertTriangle, SlidersHorizontal, ScanLine, Barcode, ChefHat, Menu, Users, Clock } from "lucide-react";
 import { doc, onSnapshot, setDoc } from "firebase/firestore";
 import { db, FAMILY_CODE } from "./firebase";
 import { BrowserMultiFormatReader } from "@zxing/browser";
@@ -126,9 +126,9 @@ export default function App() {
   const [showScanner, setShowScanner] = useState(false);
   const [scanPrefill, setScanPrefill] = useState(null);
   const [recipes, setRecipes] = useState([]);
-  const [showCocina, setShowCocina] = useState(false);
   const [showRecipeModal, setShowRecipeModal] = useState(false);
   const [editingRecipe, setEditingRecipe] = useState(null);
+  const [showMenu, setShowMenu] = useState(false);
 
   // Suscripción en tiempo real: cualquier cambio que haga otro celular con el mismo
   // FAMILY_CODE llega solo, sin recargar la página.
@@ -363,6 +363,7 @@ export default function App() {
         notifPermission={notifPermission}
         onRequestNotif={requestNotifications}
         onOpenEssentials={() => setShowEssentials(true)}
+        onOpenMenu={() => setShowMenu(true)}
       />
 
       <main className="max-w-md mx-auto px-4 pt-4">
@@ -386,9 +387,17 @@ export default function App() {
             onRemove={removeItem}
             onAdd={() => { setEditingItem(null); setScanPrefill(null); setShowAddItem(true); }}
             onScan={() => setShowScanner(true)}
-            onCocina={() => setShowCocina(true)}
             displayName={displayName}
             lowStockKeys={lowStockKeys}
+          />
+        )}
+        {view === "cocina" && (
+          <CocinaView
+            recipes={recipes}
+            items={items}
+            onAdd={() => { setEditingRecipe(null); setShowRecipeModal(true); }}
+            onEdit={(r) => { setEditingRecipe(r); setShowRecipeModal(true); }}
+            onRemove={removeRecipe}
           />
         )}
         {view === "shopping" && (
@@ -463,22 +472,19 @@ export default function App() {
         />
       )}
 
-      {showCocina && (
-        <CocinaView
-          recipes={recipes}
-          items={items}
-          onClose={() => setShowCocina(false)}
-          onAdd={() => { setEditingRecipe(null); setShowRecipeModal(true); }}
-          onEdit={(r) => { setEditingRecipe(r); setShowRecipeModal(true); }}
-          onRemove={removeRecipe}
-        />
-      )}
-
       {showRecipeModal && (
         <RecipeModal
           recipe={editingRecipe}
           onClose={() => { setShowRecipeModal(false); setEditingRecipe(null); }}
           onSave={saveRecipe}
+        />
+      )}
+
+      {showMenu && (
+        <MenuPanel
+          view={view}
+          onNavigate={(v) => { setView(v); setShowMenu(false); }}
+          onClose={() => setShowMenu(false)}
         />
       )}
 
@@ -498,21 +504,30 @@ const BG = "#F7F4EE";
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap');`;
 
 // ---------- Header ----------
-function Header({ shoppingCount, notifPermission, onRequestNotif, onOpenEssentials }) {
+function Header({ shoppingCount, notifPermission, onRequestNotif, onOpenEssentials, onOpenMenu }) {
   return (
     <header className="pt-6 pb-3 px-4 max-w-md mx-auto flex items-start justify-between">
-      <div>
-        <h1
-          style={{ fontFamily: "'Fraunces', serif" }}
-          className="text-3xl font-semibold tracking-tight text-[#1C2B2D]"
+      <div className="flex items-start gap-2">
+        <button
+          onClick={onOpenMenu}
+          className="w-9 h-9 mt-1 rounded-full flex items-center justify-center bg-[#E8E2D4] text-[#6b6355] shrink-0"
+          aria-label="Menú"
         >
-          La Heladera
-        </h1>
-        <p className="text-sm text-[#847B69] mt-0.5">
-          {shoppingCount > 0
-            ? `${shoppingCount} cosa${shoppingCount > 1 ? "s" : ""} para comprar`
-            : "Todo al día"}
-        </p>
+          <Menu size={18} />
+        </button>
+        <div>
+          <h1
+            style={{ fontFamily: "'Fraunces', serif" }}
+            className="text-3xl font-semibold tracking-tight text-[#1C2B2D]"
+          >
+            La Heladera
+          </h1>
+          <p className="text-sm text-[#847B69] mt-0.5">
+            {shoppingCount > 0
+              ? `${shoppingCount} cosa${shoppingCount > 1 ? "s" : ""} para comprar`
+              : "Todo al día"}
+          </p>
+        </div>
       </div>
       <div className="flex items-center gap-2 shrink-0 mt-1">
         <button
@@ -535,6 +550,54 @@ function Header({ shoppingCount, notifPermission, onRequestNotif, onOpenEssentia
         </button>
       </div>
     </header>
+  );
+}
+
+// ---------- Menu ----------
+function MenuPanel({ view, onNavigate, onClose }) {
+  const options = [
+    { key: "inventory", label: "Heladera", icon: Package, enabled: true },
+    { key: "cocina", label: "Cocina", icon: ChefHat, enabled: true },
+    { key: "familia", label: "Usuario / Familia", icon: Users, enabled: false },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative bg-[#F7F4EE] w-72 max-w-[80vw] h-full p-5 space-y-1 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h3 style={{ fontFamily: "'Fraunces', serif" }} className="text-lg font-semibold text-[#1C2B2D]">
+            Menú
+          </h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-[#EFEAE0] flex items-center justify-center">
+            <X size={16} />
+          </button>
+        </div>
+
+        {options.map(({ key, label, icon: Icon, enabled }) => (
+          <button
+            key={key}
+            disabled={!enabled}
+            onClick={() => enabled && onNavigate(key)}
+            className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left ${
+              enabled
+                ? view === key
+                  ? "bg-[#1C2B2D] text-[#F7F4EE]"
+                  : "bg-white text-[#241E17]"
+                : "bg-transparent text-[#B0A895]"
+            }`}
+          >
+            <Icon size={18} />
+            <span className="flex-1 font-semibold text-sm">{label}</span>
+            {!enabled && (
+              <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#B0A895]">
+                <Clock size={11} /> Próximamente
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -822,7 +885,7 @@ function ShoppingRow({ label, sublabel, auto, onCheck }) {
 }
 
 // ---------- Inventory ----------
-function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, onCocina, displayName, lowStockKeys }) {
+function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, displayName, lowStockKeys }) {
   const visibleItems = items.filter((i) => i.stock > 0);
   const hiddenCount = items.length - visibleItems.length;
 
@@ -856,13 +919,6 @@ function InventoryView({ items, onAdjust, onEdit, onRemove, onAdd, onScan, onCoc
           </button>
         </div>
       </div>
-
-      <button
-        onClick={onCocina}
-        className="w-full flex items-center justify-center gap-2 text-sm font-semibold bg-[#EFE6D8] text-[#5B4A2F] px-3 py-2.5 rounded-2xl border border-[#E1D5BE]"
-      >
-        <ChefHat size={16} /> Ver qué puedo cocinar
-      </button>
 
       {visibleItems.length === 0 && (
         <EmptyNote
@@ -950,7 +1006,7 @@ function haveIngredient(items, ingredientName) {
   return items.some((i) => normalizeIngredientName(i.name) === key && i.stock > 0);
 }
 
-function CocinaView({ recipes, items, onClose, onAdd, onEdit, onRemove }) {
+function CocinaView({ recipes, items, onAdd, onEdit, onRemove }) {
   const [activeTags, setActiveTags] = useState([]);
   const [expandedId, setExpandedId] = useState(null);
 
@@ -976,49 +1032,43 @@ function CocinaView({ recipes, items, onClose, onAdd, onEdit, onRemove }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-[#F7F4EE] z-50 flex flex-col">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#EAE4D6]">
-        <h3 style={{ fontFamily: "'Fraunces', serif" }} className="text-lg font-semibold text-[#1C2B2D] flex items-center gap-1.5">
-          <ChefHat size={17} /> Cocina
-        </h3>
-        <button onClick={onClose} className="w-8 h-8 rounded-full bg-[#EFEAE0] flex items-center justify-center">
-          <X size={16} />
-        </button>
-      </div>
+    <div className="space-y-4">
+      <h2 style={{ fontFamily: "'Fraunces', serif" }} className="text-lg font-semibold text-[#1C2B2D] flex items-center gap-1.5">
+        <ChefHat size={16} /> Cocina
+      </h2>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        <button
-          onClick={onAdd}
-          className="w-full flex items-center justify-center gap-1 text-sm font-semibold bg-[#1C2B2D] text-[#F7F4EE] px-3 py-2.5 rounded-2xl"
-        >
-          <Plus size={15} /> Nueva receta
-        </button>
+      <button
+        onClick={onAdd}
+        className="w-full flex items-center justify-center gap-1 text-sm font-semibold bg-[#1C2B2D] text-[#F7F4EE] px-3 py-2.5 rounded-2xl"
+      >
+        <Plus size={15} /> Nueva receta
+      </button>
 
-        {allTags.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {allTags.map((tag) => (
-              <button
-                key={tag}
-                onClick={() => toggleTag(tag)}
-                className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${
-                  activeTags.includes(tag)
-                    ? "bg-[#4C7A6C] text-white border-[#4C7A6C]"
-                    : "bg-white text-[#5B5347] border-[#EAE4D6]"
-                }`}
-              >
-                {tag}
-              </button>
-            ))}
-          </div>
-        )}
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              onClick={() => toggleTag(tag)}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${
+                activeTags.includes(tag)
+                  ? "bg-[#4C7A6C] text-white border-[#4C7A6C]"
+                  : "bg-white text-[#5B5347] border-[#EAE4D6]"
+              }`}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
 
-        {filtered.length === 0 && (
-          <EmptyNote
-            text={
-              recipes.length === 0
-                ? "Todavía no cargaste ninguna receta."
-                : "Ninguna receta coincide con esos filtros."
-            }
+      {filtered.length === 0 && (
+        <EmptyNote
+          text={
+            recipes.length === 0
+              ? "Todavía no cargaste ninguna receta."
+              : "Ninguna receta coincide con esos filtros."
+          }
           />
         )}
 
@@ -1092,7 +1142,6 @@ function CocinaView({ recipes, items, onClose, onAdd, onEdit, onRemove }) {
           })}
         </div>
       </div>
-    </div>
   );
 }
 
@@ -1638,6 +1687,7 @@ function NavBar({ view, setView, shoppingCount }) {
   const items = [
     { key: "home", label: "Hoy", icon: Home },
     { key: "inventory", label: "Heladera", icon: Package },
+    { key: "cocina", label: "Cocina", icon: ChefHat },
     { key: "shopping", label: "Compras", icon: ShoppingCart },
   ];
   return (
