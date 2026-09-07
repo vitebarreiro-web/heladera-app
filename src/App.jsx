@@ -398,6 +398,7 @@ export default function App() {
             onAdd={() => { setEditingRecipe(null); setShowRecipeModal(true); }}
             onEdit={(r) => { setEditingRecipe(r); setShowRecipeModal(true); }}
             onRemove={removeRecipe}
+            onSaveRecipe={saveRecipe}
           />
         )}
         {view === "shopping" && (
@@ -1006,7 +1007,8 @@ function haveIngredient(items, ingredientName) {
   return items.some((i) => normalizeIngredientName(i.name) === key && i.stock > 0);
 }
 
-function CocinaView({ recipes, items, onAdd, onEdit, onRemove }) {
+function CocinaView({ recipes, items, onAdd, onEdit, onRemove, onSaveRecipe }) {
+  const [mode, setMode] = useState("chat"); // "chat" | "recetas"
   const [activeTags, setActiveTags] = useState([]);
   const [expandedId, setExpandedId] = useState(null);
 
@@ -1037,6 +1039,29 @@ function CocinaView({ recipes, items, onAdd, onEdit, onRemove }) {
         <ChefHat size={16} /> Cocina
       </h2>
 
+      <div className="flex gap-2 bg-[#EFEAE0] p-1 rounded-2xl">
+        <button
+          onClick={() => setMode("chat")}
+          className={`flex-1 text-sm font-semibold py-2 rounded-xl transition ${
+            mode === "chat" ? "bg-white text-[#1C2B2D] shadow-sm" : "text-[#847B69]"
+          }`}
+        >
+          Preguntale a la IA
+        </button>
+        <button
+          onClick={() => setMode("recetas")}
+          className={`flex-1 text-sm font-semibold py-2 rounded-xl transition ${
+            mode === "recetas" ? "bg-white text-[#1C2B2D] shadow-sm" : "text-[#847B69]"
+          }`}
+        >
+          Mis recetas
+        </button>
+      </div>
+
+      {mode === "chat" && <CocinaAIChat items={items} onSaveRecipe={onSaveRecipe} />}
+
+      {mode === "recetas" && (
+      <>
       <button
         onClick={onAdd}
         className="w-full flex items-center justify-center gap-1 text-sm font-semibold bg-[#1C2B2D] text-[#F7F4EE] px-3 py-2.5 rounded-2xl"
@@ -1141,7 +1166,145 @@ function CocinaView({ recipes, items, onAdd, onEdit, onRemove }) {
             );
           })}
         </div>
+      </>
+      )}
+    </div>
+  );
+}
+
+// ---------- Chat con IA ----------
+function CocinaAIChat({ items, onSaveRecipe }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [savedIds, setSavedIds] = useState(new Set());
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || loading) return;
+    const userMsg = { role: "user", text };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
+
+    try {
+      const inventory = items
+        .filter((i) => i.stock > 0)
+        .map((i) => ({ name: i.name, stock: i.stock, unit: i.unit }));
+
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: messages.slice(-8),
+          inventory,
+        }),
+      });
+
+      if (!res.ok) throw new Error("bad status");
+      const data = await res.json();
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: data.reply, recipes: data.recipes || [] },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "No pude conectarme con la IA ahora. Probá de nuevo en un rato.", recipes: [] },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSave(recipe, msgIdx, rIdx) {
+    onSaveRecipe(recipe);
+    setSavedIds((prev) => new Set(prev).add(`${msgIdx}-${rIdx}`));
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-0.5">
+        {messages.length === 0 && (
+          <EmptyNote text='Contale qué se te antoja, o preguntale "qué puedo hacer con lo que tengo".' />
+        )}
+        {messages.map((m, msgIdx) => (
+          <div key={msgIdx} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm ${
+                m.role === "user" ? "bg-[#1C2B2D] text-[#F7F4EE]" : "bg-white border border-[#EAE4D6] text-[#241E17]"
+              }`}
+            >
+              <p>{m.text}</p>
+              {m.recipes?.length > 0 && (
+                <div className="mt-2 space-y-2">
+                  {m.recipes.map((r, rIdx) => {
+                    const saveKey = `${msgIdx}-${rIdx}`;
+                    const saved = savedIds.has(saveKey);
+                    return (
+                      <div key={rIdx} className="bg-[#F7F4EE] border border-[#EAE4D6] rounded-xl p-3 space-y-1.5">
+                        <p className="font-semibold text-[#1C2B2D]">{r.name}</p>
+                        {r.tags?.length > 0 && (
+                          <p className="text-xs text-[#918A7C]">{r.tags.join(" · ")}</p>
+                        )}
+                        <ul className="text-xs text-[#5B5347] space-y-0.5">
+                          {(r.ingredients || []).map((ing, idx) => (
+                            <li key={idx}>
+                              • {ing.amount ? `${ing.amount} ` : ""}{ing.unit ? `${ing.unit} ` : ""}{ing.name}
+                            </li>
+                          ))}
+                        </ul>
+                        <button
+                          onClick={() => handleSave(r, msgIdx, rIdx)}
+                          disabled={saved}
+                          className={`mt-1 text-xs font-semibold px-3 py-1.5 rounded-full ${
+                            saved ? "bg-[#E4EEE8] text-[#3A6152]" : "bg-[#4C7A6C] text-white"
+                          }`}
+                        >
+                          {saved ? "✓ Guardada" : "Guardar receta"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="bg-white border border-[#EAE4D6] rounded-2xl px-3.5 py-2.5 text-sm text-[#918A7C]">
+              Pensando…
+            </div>
+          </div>
+        )}
+        <div ref={scrollRef} />
       </div>
+
+      <div className="flex gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Ej: algo rápido sin gluten"
+          disabled={loading}
+          className="flex-1 min-w-0 bg-white border border-[#EAE4D6] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[#4C7A6C]"
+        />
+        <button
+          onClick={send}
+          disabled={loading || !input.trim()}
+          className="px-4 bg-[#1C2B2D] text-[#F7F4EE] font-semibold rounded-xl disabled:opacity-40"
+        >
+          Enviar
+        </button>
+      </div>
+    </div>
   );
 }
 
