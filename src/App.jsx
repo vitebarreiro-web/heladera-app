@@ -1207,16 +1207,23 @@ function CocinaAIChat({ items, onSaveRecipe }) {
         }),
       });
 
-      if (!res.ok) throw new Error("bad status");
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const errBody = await res.json();
+          detail = errBody.detail || errBody.error || "";
+        } catch {}
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
       const data = await res.json();
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: data.reply, recipes: data.recipes || [] },
       ]);
-    } catch {
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: "No pude conectarme con la IA ahora. Probá de nuevo en un rato.", recipes: [] },
+        { role: "assistant", text: `Error: ${String(err.message || err).slice(0, 300)}`, recipes: [] },
       ]);
     } finally {
       setLoading(false);
