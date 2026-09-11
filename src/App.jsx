@@ -346,8 +346,13 @@ export default function App() {
     setRecipes((prev) => prev.filter((r) => r.id !== id));
   }
 
-  async function handleBarcodeDetected(code) {
+  async function handleBarcodeDetected(rawCode) {
     setShowScanner(false);
+    // Un mismo código físico a veces se lee como UPC-A (12 dígitos) y otras
+    // como EAN-13 (13 dígitos, con un 0 adelante) según el momento exacto en
+    // que la cámara lo captura. Normalizamos a 13 dígitos siempre, así "el
+    // mismo pan" se reconoce sin importar cuál de las dos formas leyó.
+    const code = rawCode.trim().length === 12 ? `0${rawCode.trim()}` : rawCode.trim();
     // si ese código ya existe en algún producto, vamos directo a editarlo (sumarle stock)
     const existing = items.find((i) => i.barcode === code);
     if (existing) {
