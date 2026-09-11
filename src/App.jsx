@@ -307,6 +307,23 @@ export default function App() {
     setManualShopping((prev) => [...prev, { id: uid(), name: text, checked: false }]);
     setNewShoppingText("");
   }
+  function addMissingToShopping(names) {
+    const existingManual = new Set(manualShopping.map((m) => m.name.trim().toLowerCase()));
+    const existingAuto = new Set(autoShopping.map((a) => a.name.trim().toLowerCase()));
+    const toAdd = names.filter((n) => {
+      const key = n.trim().toLowerCase();
+      return key && !existingManual.has(key) && !existingAuto.has(key);
+    });
+    if (toAdd.length === 0) {
+      showToast("Ya estaban en la lista de compras");
+      return;
+    }
+    setManualShopping((prev) => [
+      ...prev,
+      ...toAdd.map((name) => ({ id: uid(), name: name.trim(), checked: false })),
+    ]);
+    showToast(`${toAdd.length} agregado${toAdd.length > 1 ? "s" : ""} a Comprar`);
+  }
   function toggleManual(id) {
     setManualShopping((prev) =>
       prev.map((m) => (m.id === id ? { ...m, checked: !m.checked } : m))
@@ -399,6 +416,7 @@ export default function App() {
             onEdit={(r) => { setEditingRecipe(r); setShowRecipeModal(true); }}
             onRemove={removeRecipe}
             onSaveRecipe={saveRecipe}
+            onAddMissingToShopping={addMissingToShopping}
           />
         )}
         {view === "shopping" && (
@@ -1007,7 +1025,7 @@ function haveIngredient(items, ingredientName) {
   return items.some((i) => normalizeIngredientName(i.name) === key && i.stock > 0);
 }
 
-function CocinaView({ recipes, items, onAdd, onEdit, onRemove, onSaveRecipe }) {
+function CocinaView({ recipes, items, onAdd, onEdit, onRemove, onSaveRecipe, onAddMissingToShopping }) {
   const [mode, setMode] = useState("chat"); // "chat" | "recetas"
   const [activeTags, setActiveTags] = useState([]);
   const [expandedId, setExpandedId] = useState(null);
@@ -1058,7 +1076,9 @@ function CocinaView({ recipes, items, onAdd, onEdit, onRemove, onSaveRecipe }) {
         </button>
       </div>
 
-      {mode === "chat" && <CocinaAIChat items={items} onSaveRecipe={onSaveRecipe} />}
+      {mode === "chat" && (
+        <CocinaAIChat items={items} onSaveRecipe={onSaveRecipe} onAddMissingToShopping={onAddMissingToShopping} />
+      )}
 
       {mode === "recetas" && (
       <>
@@ -1135,6 +1155,14 @@ function CocinaView({ recipes, items, onAdd, onEdit, onRemove, onSaveRecipe }) {
                           );
                         })}
                       </ul>
+                      {r.missing.length > 0 && (
+                        <button
+                          onClick={() => onAddMissingToShopping(r.missing.map((m) => m.name))}
+                          className="mt-2 text-xs font-semibold text-[#4C7A6C] flex items-center gap-1"
+                        >
+                          <ShoppingCart size={13} /> Agregar faltantes a Comprar
+                        </button>
+                      )}
                     </div>
                     {r.steps?.length > 0 && (
                       <div>
@@ -1173,7 +1201,7 @@ function CocinaView({ recipes, items, onAdd, onEdit, onRemove, onSaveRecipe }) {
 }
 
 // ---------- Chat con IA ----------
-function CocinaAIChat({ items, onSaveRecipe }) {
+function CocinaAIChat({ items, onSaveRecipe, onAddMissingToShopping }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1254,6 +1282,7 @@ function CocinaAIChat({ items, onSaveRecipe }) {
                   {m.recipes.map((r, rIdx) => {
                     const saveKey = `${msgIdx}-${rIdx}`;
                     const saved = savedIds.has(saveKey);
+                    const missing = (r.ingredients || []).filter((ing) => !haveIngredient(items, ing.name));
                     return (
                       <div key={rIdx} className="bg-[#F7F4EE] border border-[#EAE4D6] rounded-xl p-3 space-y-1.5">
                         <p className="font-semibold text-[#1C2B2D]">{r.name}</p>
@@ -1267,15 +1296,25 @@ function CocinaAIChat({ items, onSaveRecipe }) {
                             </li>
                           ))}
                         </ul>
-                        <button
-                          onClick={() => handleSave(r, msgIdx, rIdx)}
-                          disabled={saved}
-                          className={`mt-1 text-xs font-semibold px-3 py-1.5 rounded-full ${
-                            saved ? "bg-[#E4EEE8] text-[#3A6152]" : "bg-[#4C7A6C] text-white"
-                          }`}
-                        >
-                          {saved ? "✓ Guardada" : "Guardar receta"}
-                        </button>
+                        <div className="flex flex-wrap gap-2 pt-0.5">
+                          <button
+                            onClick={() => handleSave(r, msgIdx, rIdx)}
+                            disabled={saved}
+                            className={`text-xs font-semibold px-3 py-1.5 rounded-full ${
+                              saved ? "bg-[#E4EEE8] text-[#3A6152]" : "bg-[#4C7A6C] text-white"
+                            }`}
+                          >
+                            {saved ? "✓ Guardada" : "Guardar receta"}
+                          </button>
+                          {missing.length > 0 && (
+                            <button
+                              onClick={() => onAddMissingToShopping(missing.map((mi) => mi.name))}
+                              className="text-xs font-semibold px-3 py-1.5 rounded-full bg-white border border-[#EAE4D6] text-[#1C2B2D] flex items-center gap-1"
+                            >
+                              <ShoppingCart size={12} /> Agregar faltantes
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
